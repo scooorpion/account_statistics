@@ -83,7 +83,6 @@ Personal_Accounts/
 │   ├── types/                # 类型定义
 │   │   └── financial.ts
 │   └── hooks/useTheme.ts     # 主题切换与监听
-└── .trae/documents/          # 项目文档（中文）
 ```
 
 ## 使用说明
