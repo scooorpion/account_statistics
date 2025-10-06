@@ -1,5 +1,5 @@
 import jsPDF from 'jspdf';
-import 'jspdf-autotable';
+import autoTable from 'jspdf-autotable';
 import html2canvas from 'html2canvas';
 import { TransactionData } from '@/types/financial';
 import { generateCategoryStats } from './dataProcessor';
@@ -7,11 +7,7 @@ import { format } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 
 // 声明jsPDF的autoTable方法
-declare module 'jspdf' {
-  interface jsPDF {
-    autoTable: (options: any) => jsPDF;
-  }
-}
+// 移除对 pdf.autoTable 的类型扩展，改为使用函数形式 autoTable(doc, options)
 
 export interface ExportData {
   totalIncome: number;
@@ -77,7 +73,7 @@ export const exportToPDF = async (chartsElementId: string, tablesElementId: stri
       setTimeout(checkCharts, 500); // 初始延迟
     });
 
-    // 创建PDF文档，设置UTF-8编码支持
+    // 创建PDF文档
     const pdf = new jsPDF({
       orientation: 'p',
       unit: 'mm',
@@ -86,7 +82,7 @@ export const exportToPDF = async (chartsElementId: string, tablesElementId: stri
       compress: true
     });
     
-    // 设置字体以支持中文
+    // 标题与时间使用英文，避免中文字体依赖
     pdf.setFont('helvetica');
     
     const pageWidth = pdf.internal.pageSize.getWidth();
@@ -94,27 +90,14 @@ export const exportToPDF = async (chartsElementId: string, tablesElementId: stri
     const margin = 20;
     const contentWidth = pageWidth - 2 * margin;
     
-    // 添加标题
+    // 添加英文标题与生成时间（避免中文乱码）
     pdf.setFontSize(20);
-    pdf.text('个人财务分析报告', pageWidth / 2, 20, { align: 'center' });
+    pdf.text('Financial Analysis Report', pageWidth / 2, 20, { align: 'center' });
+    pdf.setFontSize(11);
+    const currentDate = new Date().toLocaleString();
+    pdf.text(`Generated: ${currentDate}`, margin, 30);
     
-    // 添加生成时间
-    pdf.setFontSize(12);
-    const currentDate = new Date().toLocaleString('zh-CN');
-    pdf.text(`生成时间: ${currentDate}`, margin, 35);
-    
-    // 添加数据摘要
-    pdf.setFontSize(14);
-    pdf.text('数据摘要', margin, 50);
-    
-    pdf.setFontSize(12);
-    pdf.text(`分析期间: ${data.dateRange}`, margin, 65);
-    pdf.text(`总收入: ¥${data.totalIncome.toLocaleString()}`, margin, 75);
-    pdf.text(`总支出: ¥${data.totalExpense.toLocaleString()}`, margin, 85);
-    pdf.text(`净收入: ¥${(data.totalIncome - data.totalExpense).toLocaleString()}`, margin, 95);
-    pdf.text(`交易笔数: ${data.transactionCount}`, margin, 105);
-    
-    let currentY = 120;
+    let currentY = 40;
     
     // 捕获图表区域
     console.log('开始捕获图表，html2canvas配置:', {
@@ -127,39 +110,29 @@ export const exportToPDF = async (chartsElementId: string, tablesElementId: stri
     });
     
     const chartsCanvas = await html2canvas(chartsElement, {
-      scale: 1.2,
+      scale: 2,
       useCORS: true,
       allowTaint: true,
       backgroundColor: '#ffffff',
       width: chartsElement.scrollWidth,
       height: chartsElement.scrollHeight,
       logging: false,
-      foreignObjectRendering: true,
-      removeContainer: true,
+      foreignObjectRendering: false,
+      removeContainer: false,
       imageTimeout: 15000,
-      onclone: (clonedDoc, element) => {
-        console.log('html2canvas克隆文档完成');
-        // 确保所有SVG元素正确渲染
-        const svgs = element.querySelectorAll('svg');
-        svgs.forEach((svg) => {
-          svg.style.overflow = 'visible';
-          svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-        });
-        
-        // 确保Canvas元素正确渲染
-        const canvases = element.querySelectorAll('canvas');
-        canvases.forEach((canvas) => {
-          canvas.style.maxWidth = 'none';
-          canvas.style.maxHeight = 'none';
-        });
-      }
     });
     
     console.log('图表捕获完成，canvas尺寸:', { width: chartsCanvas.width, height: chartsCanvas.height });
     
     const chartsImgData = chartsCanvas.toDataURL('image/png');
     const chartsImgWidth = contentWidth;
-    const chartsImgHeight = (chartsCanvas.height * chartsImgWidth) / chartsCanvas.width;
+    let chartsImgHeight = (chartsCanvas.height * chartsImgWidth) / chartsCanvas.width;
+    // 若图片高度超过页面可用高度，缩放以适配
+    const maxImgHeight = pageHeight - 2 * margin;
+    if (chartsImgHeight > maxImgHeight) {
+      const scaleFactor = maxImgHeight / chartsImgHeight;
+      chartsImgHeight = chartsImgHeight * scaleFactor;
+    }
     
     // 检查是否需要新页面放置图表
     if (currentY + chartsImgHeight > pageHeight - margin) {
@@ -170,149 +143,34 @@ export const exportToPDF = async (chartsElementId: string, tablesElementId: stri
     pdf.addImage(chartsImgData, 'PNG', margin, currentY, chartsImgWidth, chartsImgHeight);
     currentY += chartsImgHeight + 20;
     
-    // 添加分类统计表格
-    const incomeStats = generateCategoryStats(data.transactions, '收入');
-    const expenseStats = generateCategoryStats(data.transactions, '支出');
-    
-    // 收入分类统计
-    if (incomeStats.length > 0) {
-      if (currentY + 60 > pageHeight - margin) {
-        pdf.addPage();
-        currentY = margin;
-      }
-      
-      pdf.setFontSize(14);
-      pdf.text('收入分类统计', margin, currentY);
-      currentY += 15;
-      
-      // 使用autoTable创建表格，支持UTF-8编码
-      const incomeTableData = incomeStats.slice(0, 10).map(stat => [
-        stat.category,
-        `¥${stat.amount.toLocaleString()}`,
-        stat.count.toString(),
-        `${stat.percentage.toFixed(1)}%`
-      ]);
-      
-      pdf.autoTable({
-        startY: currentY,
-        head: [['分类', '金额', '笔数', '占比']],
-        body: incomeTableData,
-        styles: {
-          font: 'helvetica',
-          fontSize: 10,
-          cellPadding: 3
-        },
-        headStyles: {
-          fillColor: [66, 139, 202],
-          textColor: 255,
-          fontStyle: 'bold'
-        },
-        margin: { left: margin, right: margin },
-        theme: 'striped'
-      });
-      
-      currentY = (pdf as any).lastAutoTable.finalY + 10;
+    // 捕获数据详情区域（包含中文表格与布局），避免中文乱码
+    const tablesCanvas = await html2canvas(tablesElement, {
+      scale: 2,
+      useCORS: true,
+      allowTaint: true,
+      backgroundColor: '#ffffff',
+      width: tablesElement.scrollWidth,
+      height: tablesElement.scrollHeight,
+      logging: false,
+      foreignObjectRendering: false,
+      removeContainer: false,
+      imageTimeout: 15000,
+    });
+
+    const tablesImgData = tablesCanvas.toDataURL('image/png');
+    const tablesImgWidth = contentWidth;
+    let tablesImgHeight = (tablesCanvas.height * tablesImgWidth) / tablesCanvas.width;
+    if (tablesImgHeight > maxImgHeight) {
+      const scaleFactor = maxImgHeight / tablesImgHeight;
+      tablesImgHeight = tablesImgHeight * scaleFactor;
     }
-    
-    // 支出分类统计
-    if (expenseStats.length > 0) {
-      if (currentY + 60 > pageHeight - margin) {
-        pdf.addPage();
-        currentY = margin;
-      }
-      
-      pdf.setFontSize(14);
-      pdf.text('支出分类统计', margin, currentY);
-      currentY += 15;
-      
-      // 使用autoTable创建表格，支持UTF-8编码
-      const expenseTableData = expenseStats.slice(0, 10).map(stat => [
-        stat.category,
-        `¥${stat.amount.toLocaleString()}`,
-        stat.count.toString(),
-        `${stat.percentage.toFixed(1)}%`
-      ]);
-      
-      pdf.autoTable({
-        startY: currentY,
-        head: [['分类', '金额', '笔数', '占比']],
-        body: expenseTableData,
-        styles: {
-          font: 'helvetica',
-          fontSize: 10,
-          cellPadding: 3
-        },
-        headStyles: {
-          fillColor: [220, 53, 69],
-          textColor: 255,
-          fontStyle: 'bold'
-        },
-        margin: { left: margin, right: margin },
-        theme: 'striped'
-      });
-      
-      currentY = (pdf as any).lastAutoTable.finalY + 20;
+
+    // 页面剩余空间不足时换页
+    if (currentY + tablesImgHeight > pageHeight - margin) {
+      pdf.addPage();
+      currentY = margin;
     }
-    
-    // 添加交易记录详情
-    if (data.transactions.length > 0) {
-      if (currentY + 60 > pageHeight - margin) {
-        pdf.addPage();
-        currentY = margin;
-      }
-      
-      pdf.setFontSize(14);
-      pdf.text('交易记录详情', margin, currentY);
-      currentY += 15;
-      
-      // 准备交易记录数据（显示前50条）
-      const transactionTableData = data.transactions.slice(0, 50).map(transaction => {
-        const dateStr = format(transaction.transactionTime, 'MM-dd HH:mm', { locale: zhCN });
-        const description = transaction.description.length > 20 ? 
-          transaction.description.substring(0, 20) + '...' : transaction.description;
-        const counterparty = transaction.counterparty.length > 15 ? 
-          transaction.counterparty.substring(0, 15) + '...' : transaction.counterparty;
-        
-        return [
-          dateStr,
-          transaction.category,
-          counterparty,
-          description,
-          transaction.type,
-          `¥${transaction.amount.toLocaleString()}`
-        ];
-      });
-      
-      pdf.autoTable({
-        startY: currentY,
-        head: [['时间', '分类', '对方', '说明', '类型', '金额']],
-        body: transactionTableData,
-        styles: {
-          font: 'helvetica',
-          fontSize: 8,
-          cellPadding: 2,
-          overflow: 'linebreak',
-          cellWidth: 'wrap'
-        },
-        headStyles: {
-          fillColor: [108, 117, 125],
-          textColor: 255,
-          fontStyle: 'bold',
-          fontSize: 9
-        },
-        columnStyles: {
-          0: { cellWidth: 25 }, // 时间
-          1: { cellWidth: 20 }, // 分类
-          2: { cellWidth: 25 }, // 对方
-          3: { cellWidth: 35 }, // 说明
-          4: { cellWidth: 15 }, // 类型
-          5: { cellWidth: 25 }  // 金额
-        },
-        margin: { left: margin, right: margin },
-        theme: 'striped',
-        pageBreak: 'auto'
-      });
-    }
+    pdf.addImage(tablesImgData, 'PNG', margin, currentY, tablesImgWidth, tablesImgHeight);
     
     // 保存PDF
     const fileName = `财务分析报告_${new Date().toISOString().split('T')[0].replace(/-/g, '')}_${new Date().toTimeString().split(' ')[0].replace(/:/g, '')}.pdf`;
